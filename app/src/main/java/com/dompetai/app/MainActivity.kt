@@ -1,6 +1,8 @@
+
 package com.dompetai.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Bundle
 import android.graphics.Color
 import android.view.Gravity
@@ -26,46 +28,54 @@ class MainActivity : Activity() {
             )
         """)
 
-        val layout = LinearLayout(this)
-        layout.orientation = LinearLayout.VERTICAL
-        layout.setPadding(24, 24, 24, 24)
-        layout.setBackgroundColor(Color.rgb(18, 18, 18))
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 24, 24, 24)
+            setBackgroundColor(Color.rgb(18, 18, 18))
+        }
 
-        balanceText = TextView(this)
-        balanceText.textSize = 28f
-        balanceText.setTextColor(Color.WHITE)
+        balanceText = TextView(this).apply {
+            textSize = 28f
+            setTextColor(Color.WHITE)
+        }
         layout.addView(balanceText)
 
-        val description = EditText(this)
-        description.hint = "Keterangan transaksi"
-        description.setTextColor(Color.WHITE)
-        description.setHintTextColor(Color.GRAY)
+        val description = EditText(this).apply {
+            hint = "Keterangan transaksi"
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
         layout.addView(description)
 
-        val amount = EditText(this)
-        amount.hint = "Jumlah uang (Rp)"
-        amount.inputType = 2
-        amount.setTextColor(Color.WHITE)
-        amount.setHintTextColor(Color.GRAY)
+        val amount = EditText(this).apply {
+            hint = "Jumlah uang (Rp)"
+            inputType = 2
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
         layout.addView(amount)
 
-        val income = Button(this)
-        income.text = "Tambah Pemasukan"
+        val income = Button(this).apply {
+            text = "Tambah Pemasukan"
+        }
         layout.addView(income)
 
-        val expense = Button(this)
-        expense.text = "Tambah Pengeluaran"
+        val expense = Button(this).apply {
+            text = "Tambah Pengeluaran"
+        }
         layout.addView(expense)
 
-        val title = TextView(this)
-        title.text = "Riwayat Transaksi"
-        title.textSize = 20f
-        title.setTextColor(Color.WHITE)
-        title.setPadding(0, 20, 0, 10)
+        val title = TextView(this).apply {
+            text = "Riwayat Transaksi"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            setPadding(0, 20, 0, 10)
+        }
         layout.addView(title)
 
-        history = LinearLayout(this)
-        history.orientation = LinearLayout.VERTICAL
+        history = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
         layout.addView(history)
 
         income.setOnClickListener {
@@ -103,6 +113,90 @@ class MainActivity : Activity() {
         updateScreen()
     }
 
+    private fun editTransaction(id: Int, desc: String, amount: Double, type: String) {
+        val inputDesc = EditText(this).apply {
+            setText(desc)
+            hint = "Keterangan transaksi"
+        }
+
+        val inputAmount = EditText(this).apply {
+            setText(amount.toLong().toString())
+            hint = "Jumlah uang"
+            inputType = 2
+        }
+
+        val typeOptions = arrayOf("Pemasukan", "Pengeluaran")
+        var selectedType = if (type == "IN") 0 else 1
+
+        val typeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                typeOptions
+            )
+            setSelection(selectedType)
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: android.widget.AdapterView<*>?,
+                    view: android.view.View?,
+                    position: Int,
+                    id: Long
+                ) {
+                    selectedType = position
+                }
+
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+        }
+
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(30, 10, 30, 10)
+            addView(inputDesc)
+            addView(inputAmount)
+            addView(typeSpinner)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Edit Transaksi")
+            .setView(form)
+            .setNegativeButton("Batal", null)
+            .setPositiveButton("Simpan") { _, _ ->
+                val newDesc = inputDesc.text.toString().trim()
+                val newAmount = inputAmount.text.toString().toDoubleOrNull()
+
+                if (newDesc.isBlank() || newAmount == null || newAmount <= 0) {
+                    Toast.makeText(this, "Data tidak valid", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                val newType = if (selectedType == 0) "IN" else "OUT"
+
+                db.execSQL(
+                    "UPDATE transactions SET description=?, amount=?, type=? WHERE id=?",
+                    arrayOf(newDesc, newAmount, newType, id)
+                )
+
+                updateScreen()
+            }
+            .show()
+    }
+
+    private fun deleteTransaction(id: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Hapus Transaksi?")
+            .setMessage("Transaksi ini akan dihapus secara permanen.")
+            .setNegativeButton("Batal", null)
+            .setPositiveButton("Hapus") { _, _ ->
+                db.execSQL(
+                    "DELETE FROM transactions WHERE id=?",
+                    arrayOf(id)
+                )
+                updateScreen()
+            }
+            .show()
+    }
+
     private fun updateScreen() {
         var balance = 0.0
 
@@ -121,22 +215,52 @@ class MainActivity : Activity() {
         history.removeAllViews()
 
         val records = db.rawQuery(
-            "SELECT description, amount, type FROM transactions ORDER BY id DESC",
+            "SELECT id, description, amount, type FROM transactions ORDER BY id DESC",
             null
         )
 
         while (records.moveToNext()) {
-            val desc = records.getString(0)
-            val amount = records.getDouble(1)
-            val type = records.getString(2)
+            val id = records.getInt(0)
+            val desc = records.getString(1)
+            val amount = records.getDouble(2)
+            val type = records.getString(3)
 
-            val item = TextView(this)
-            val sign = if (type == "IN") "+" else "-"
-            item.text = "$desc : $sign Rp ${"%,.0f".format(amount)}"
-            item.textSize = 16f
-            item.setTextColor(Color.WHITE)
-            item.setPadding(0, 12, 0, 12)
-            history.addView(item)
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 12, 0, 12)
+            }
+
+            val item = TextView(this).apply {
+                val sign = if (type == "IN") "+" else "-"
+                text = "$desc : $sign Rp ${"%,.0f".format(amount)}"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+            }
+            itemLayout.addView(item)
+
+            val buttons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+
+            val editButton = Button(this).apply {
+                text = "Edit"
+                setOnClickListener {
+                    editTransaction(id, desc, amount, type)
+                }
+            }
+
+            val deleteButton = Button(this).apply {
+                text = "Hapus"
+                setOnClickListener {
+                    deleteTransaction(id)
+                }
+            }
+
+            buttons.addView(editButton)
+            buttons.addView(deleteButton)
+            itemLayout.addView(buttons)
+
+            history.addView(itemLayout)
         }
 
         records.close()
