@@ -5,11 +5,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.view.View
 import android.widget.*
 import android.database.sqlite.SQLiteDatabase
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
 
 class MainActivity : Activity() {
 
@@ -18,9 +22,20 @@ class MainActivity : Activity() {
     private lateinit var incomeText: TextView
     private lateinit var expenseText: TextView
     private lateinit var history: LinearLayout
+    private lateinit var chartView: DailyChartView
+
+    data class ChartDay(
+        val label: String,
+        val income: Double,
+        val expense: Double
+    )
 
     private fun today(): String {
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +56,7 @@ class MainActivity : Activity() {
         // Migrasi database lama tanpa menghapus transaksi
         var hasDate = false
         val columns = db.rawQuery("PRAGMA table_info(transactions)", null)
+
         while (columns.moveToNext()) {
             if (columns.getString(1) == "transaction_date") {
                 hasDate = true
@@ -49,7 +65,9 @@ class MainActivity : Activity() {
         columns.close()
 
         if (!hasDate) {
-            db.execSQL("ALTER TABLE transactions ADD COLUMN transaction_date TEXT")
+            db.execSQL(
+                "ALTER TABLE transactions ADD COLUMN transaction_date TEXT"
+            )
         }
 
         val layout = LinearLayout(this).apply {
@@ -94,6 +112,24 @@ class MainActivity : Activity() {
             setPadding(0, 8, 0, 16)
         }
         layout.addView(expenseText)
+
+        // Grafik pemasukan dan pengeluaran
+        val chartTitle = TextView(this).apply {
+            text = "Grafik 7 Hari Terakhir"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            setPadding(0, 20, 0, 8)
+        }
+        layout.addView(chartTitle)
+
+        chartView = DailyChartView()
+        layout.addView(
+            chartView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(240)
+            )
+        )
 
         val description = EditText(this).apply {
             hint = "Keterangan transaksi"
@@ -160,7 +196,218 @@ class MainActivity : Activity() {
         updateScreen()
     }
 
-    private fun addTransaction(desc: String, value: String, type: String) {
+    // Mengambil data transaksi selama 7 hari terakhir
+    private fun getWeeklyData(): List<ChartDay> {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val labelFormat = SimpleDateFormat("dd/MM", Locale.US)
+
+        val dates = mutableListOf<Pair<String, String>>()
+        val calendar = Calendar.getInstance()
+
+        calendar.add(Calendar.DAY_OF_YEAR, -6)
+
+        repeat(7) {
+            dates.add(
+                Pair(
+                    dateFormat.format(calendar.time),
+                    labelFormat.format(calendar.time)
+                )
+            )
+            calendar.add(Calendar.DAY_OF_YEAR, 1)
+        }
+
+        val totals = mutableMapOf<String, MutableList<Double>>()
+
+        for ((date, _) in dates) {
+            totals[date] = mutableListOf(0.0, 0.0)
+        }
+
+        val cursor = db.rawQuery(
+            """
+            SELECT transaction_date, type, SUM(amount)
+            FROM transactions
+            WHERE transaction_date BETWEEN ? AND ?
+            GROUP BY transaction_date, type
+            """,
+            arrayOf(dates.first().first, dates.last().first)
+        )
+
+        while (cursor.moveToNext()) {
+            val date = cursor.getString(0)
+            val type = cursor.getString(1)
+            val total = cursor.getDouble(2)
+
+            val values = totals[date] ?: continue
+
+            if (type == "IN") {
+                values[0] = total
+            } else if (type == "OUT") {
+                values[1] = total
+            }
+        }
+
+        cursor.close()
+
+        return dates.map { (date, label) ->
+            val values = totals[date]!!
+            ChartDay(label, values[0], values[1])
+        }
+    }
+
+    // Tampilan grafik tanpa library tambahan
+    inner class DailyChartView : View(this@MainActivity) {
+
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var days: List<ChartDay> = emptyList()
+
+        private val green = Color.rgb(76, 200, 120)
+        private val red = Color.rgb(255, 100, 100)
+        private val gray = Color.rgb(130, 130, 130)
+
+        fun setData(data: List<ChartDay>) {
+            days = data
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+
+            val density = resources.displayMetrics.density
+            val left = 38f * density
+            val right = width - 10f * density
+            val top = 42f * density
+            val bottom = height - 35f * density
+
+            // Legenda
+            paint.style = Paint.Style.FILL
+            paint.textSize = 11f * density
+
+            paint.color = green
+            canvas.drawRect(
+                left, 8f * density,
+                left + 10f * density, 18f * density,
+                paint
+            )
+            paint.color = Color.WHITE
+            canvas.drawText(
+                "Pemasukan",
+                left + 15f * density,
+                18f * density,
+                paint
+            )
+
+            val secondLegend = left + 105f * density
+
+            paint.color = red
+            canvas.drawRect(
+                secondLegend, 8f * density,
+                secondLegend + 10f * density,
+                18f * density,
+                paint
+            )
+            paint.color = Color.WHITE
+            canvas.drawText(
+                "Pengeluaran",
+                secondLegend + 15f * density,
+                18f * density,
+                paint
+            )
+
+            if (days.isEmpty()) return
+
+            var maxValue = 0.0
+            for (day in days) {
+                maxValue = maxOf(
+                    maxValue,
+                    day.income,
+                    day.expense
+                )
+            }
+
+            if (maxValue <= 0.0) {
+                paint.color = Color.LTGRAY
+                paint.textSize = 13f * density
+                canvas.drawText(
+                    "Belum ada transaksi dalam 7 hari terakhir",
+                    left,
+                    top + 35f * density,
+                    paint
+                )
+                return
+            }
+
+            val chartHeight = bottom - top
+            val chartWidth = right - left
+
+            // Garis bantu grafik
+            paint.color = Color.rgb(65, 65, 65)
+            paint.strokeWidth = 1f * density
+
+            for (i in 0..4) {
+                val y = top + chartHeight * i / 4f
+                canvas.drawLine(left, y, right, y, paint)
+            }
+
+            val groupWidth = chartWidth / 7f
+            val barWidth = groupWidth * 0.25f
+            val gap = groupWidth * 0.06f
+
+            for (i in days.indices) {
+                val day = days[i]
+                val center = left + groupWidth * (i + 0.5f)
+
+                val incomeHeight =
+                    (day.income / maxValue * chartHeight).toFloat()
+
+                val expenseHeight =
+                    (day.expense / maxValue * chartHeight).toFloat()
+
+                // Batang pemasukan
+                paint.color = green
+                canvas.drawRoundRect(
+                    center - gap / 2f - barWidth,
+                    bottom - incomeHeight,
+                    center - gap / 2f,
+                    bottom,
+                    4f * density,
+                    4f * density,
+                    paint
+                )
+
+                // Batang pengeluaran
+                paint.color = red
+                canvas.drawRoundRect(
+                    center + gap / 2f,
+                    bottom - expenseHeight,
+                    center + gap / 2f + barWidth,
+                    bottom,
+                    4f * density,
+                    4f * density,
+                    paint
+                )
+
+                // Label tanggal
+                paint.color = Color.LTGRAY
+                paint.textSize = 9f * density
+                paint.textAlign = Paint.Align.CENTER
+
+                canvas.drawText(
+                    day.label,
+                    center,
+                    height - 10f * density,
+                    paint
+                )
+            }
+
+            paint.textAlign = Paint.Align.LEFT
+        }
+    }
+
+    private fun addTransaction(
+        desc: String,
+        value: String,
+        type: String
+    ) {
         val number = value.toDoubleOrNull()
 
         if (desc.isBlank() || number == null || number <= 0) {
@@ -243,9 +490,14 @@ class MainActivity : Activity() {
             .setNegativeButton("Batal", null)
             .setPositiveButton("Simpan") { _, _ ->
                 val newDesc = inputDesc.text.toString().trim()
-                val newAmount = inputAmount.text.toString().toDoubleOrNull()
+                val newAmount =
+                    inputAmount.text.toString().toDoubleOrNull()
 
-                if (newDesc.isBlank() || newAmount == null || newAmount <= 0) {
+                if (
+                    newDesc.isBlank() ||
+                    newAmount == null ||
+                    newAmount <= 0
+                ) {
                     Toast.makeText(
                         this,
                         "Data tidak valid",
@@ -254,7 +506,8 @@ class MainActivity : Activity() {
                     return@setPositiveButton
                 }
 
-                val newType = if (selectedType == 0) "IN" else "OUT"
+                val newType =
+                    if (selectedType == 0) "IN" else "OUT"
 
                 db.execSQL(
                     """
@@ -273,7 +526,9 @@ class MainActivity : Activity() {
     private fun deleteTransaction(id: Int) {
         AlertDialog.Builder(this)
             .setTitle("Hapus Transaksi?")
-            .setMessage("Transaksi ini akan dihapus secara permanen.")
+            .setMessage(
+                "Transaksi ini akan dihapus secara permanen."
+            )
             .setNegativeButton("Batal", null)
             .setPositiveButton("Hapus") { _, _ ->
                 db.execSQL(
@@ -302,7 +557,8 @@ class MainActivity : Activity() {
         }
         cursor.close()
 
-        balanceText.text = "Saldo: Rp ${"%,.0f".format(balance)}"
+        balanceText.text =
+            "Saldo: Rp ${"%,.0f".format(balance)}"
 
         var dailyIncome = 0.0
         var dailyExpense = 0.0
@@ -331,6 +587,9 @@ class MainActivity : Activity() {
 
         expenseText.text =
             "Uang Keluar Hari Ini: Rp ${"%,.0f".format(dailyExpense)}"
+
+        // Perbarui grafik setiap ada perubahan transaksi
+        chartView.setData(getWeeklyData())
 
         history.removeAllViews()
 
